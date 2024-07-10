@@ -1,8 +1,12 @@
 import os
 import base64
 import streamlit as st
-from io import BytesIO
+from io import BytesIO, StringIO
 from PIL import Image
+from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
+from pdfminer.converter import TextConverter
+from pdfminer.layout import LAParams
+from pdfminer.pdfpage import PDFPage
 from zhipuai import ZhipuAI, APIRequestFailedError
 
 zhipuai_api_key = os.getenv('ZHIPUAI_API_KEY', None)
@@ -13,8 +17,8 @@ if not zhipuai_api_key:
 
 client = ZhipuAI(api_key=zhipuai_api_key)
 
-st.header(":thought_balloon: Smart Image Reader", anchor=False)
-st.subheader(":alien: AI-Powered Image Parsing :alien:", anchor=False)
+st.header(":thought_balloon: Smart Resume Parser", anchor=False)
+st.subheader(":alien: Powered by Zhipu AI :alien:", anchor=False)
 st.divider()
 
 def convert_to_base64(pil_image):
@@ -33,7 +37,26 @@ def convert_to_base64(pil_image):
         st.stop()
     return img_str
 
-def run_api(input_prompt, image_b64):
+def convert_pdf_to_txt(file):
+    try:
+        parse_out = StringIO()
+        pdf_resource_manager = PDFResourceManager()
+        device = TextConverter(pdf_resource_manager, parse_out, laparams=LAParams())
+        interpreter = PDFPageInterpreter(pdf_resource_manager, device)
+
+        for page in PDFPage.get_pages(file, caching=True, check_extractable=True):
+            interpreter.process_page(page)
+        pdf_text = parse_out.getvalue()
+
+        file.close()
+        device.close()
+        parse_out.close()
+    except Exception:
+        st.write("red[Something went wrong during pdf processing. Please Try Later.]")
+        st.stop()
+    return pdf_text
+
+def parse_image(input_prompt, image_b64):
     try:
         response = client.chat.completions.create(
             model="glm-4v", 
@@ -50,16 +73,41 @@ def run_api(input_prompt, image_b64):
     except APIRequestFailedError:
         return "Cannot Parse Image Right Now. Please Try Later."
 
+def parse_pdf(input_prompt, pdf_text):
+    try:
+        response = client.chat.completions.create(
+            model="glm-4",
+            messages=[
+                {"role": "system", "content": f"Answer the question based only on the following resume:\n {pdf_text}"},
+                {"role": "user", "content": input_prompt},
+                    ],
+                )
+        return response.choices[0].message.content
+    except APIRequestFailedError:
+        return "Cannot Parse Image Right Now. Please Try Later."
+
 
 if __name__ == '__main__':
-    input_image_upload = st.file_uploader("Upload Image", type='jpeg')
-    if input_image_upload:
-        pil_image = Image.open(input_image_upload)
-        image_b64 = convert_to_base64(pil_image)
-        
-        input_prompt = st.chat_input(placeholder="prompt")
+    input_upload = st.file_uploader("Upload Image/Pdf", type=['pdf', 'jpeg'])
 
-        if input_prompt:
-            with st.spinner('Please wait...'):
-                res = run_api(input_prompt, image_b64)
-                st.write(res)
+    if input_upload:
+        if input_upload.type.split('/')[1] in ('jpg', 'jpeg'):
+            pil_image = Image.open(input_upload)
+            image_b64 = convert_to_base64(pil_image)
+
+            input_prompt = st.chat_input(placeholder="prompt")
+
+            if input_prompt:
+                with st.spinner('Please wait...'):
+                    res = parse_image(input_prompt, image_b64)
+                    st.write(res)
+       
+        if input_upload.type.split('/')[1] == 'pdf':
+            pdf_text = convert_pdf_to_txt(input_upload)
+
+            input_prompt = st.chat_input(placeholder="prompt")
+
+            if input_prompt:
+                with st.spinner('Please wait...'):
+                    res = parse_pdf(input_prompt, pdf_text)
+                    st.write(res)
